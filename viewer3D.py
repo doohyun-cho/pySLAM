@@ -286,7 +286,7 @@ class Viewer3D(object):
         if num_map_keyframes>0:       
             for kf in keyframes:
                 map_state.poses.append(kf.Twc)  
-        map_state.poses = np.array(map_state.poses)
+        map_state.poses = np.array(map_state.poses)     # most important part
 
         num_map_points = map.num_points()
         if num_map_points>0:

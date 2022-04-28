@@ -50,6 +50,10 @@ from feature_tracker_configs import FeatureTrackerConfigs
 
 from parameters import Parameters  
 import multiprocessing as mp 
+from scipy.spatial.transform import Rotation
+import matplotlib.pyplot as plt
+from utils_geom import add_ones_1D
+np.set_printoptions(precision=4)
 
 
 if __name__ == "__main__":
@@ -68,12 +72,12 @@ if __name__ == "__main__":
     
     num_features=2000 
 
-    tracker_type = FeatureTrackerTypes.DES_BF      # descriptor-based, brute force matching with knn 
-    #tracker_type = FeatureTrackerTypes.DES_FLANN  # descriptor-based, FLANN-based matching 
+    # tracker_type = FeatureTrackerTypes.DES_BF      # descriptor-based, brute force matching with knn 
+    tracker_type = FeatureTrackerTypes.DES_FLANN  # descriptor-based, FLANN-based matching 
 
     # select your tracker configuration (see the file feature_tracker_configs.py) 
     # FeatureTrackerConfigs: SHI_TOMASI_ORB, FAST_ORB, ORB, ORB2, ORB2_FREAK, ORB2_BEBLID, BRISK, AKAZE, FAST_FREAK, SIFT, ROOT_SIFT, SURF, SUPERPOINT, FAST_TFEAT, CONTEXTDESC
-    tracker_config = FeatureTrackerConfigs.TEST
+    tracker_config = FeatureTrackerConfigs.ORB2
     tracker_config['num_features'] = num_features
     tracker_config['tracker_type'] = tracker_type
     
@@ -97,6 +101,7 @@ if __name__ == "__main__":
     is_paused = False 
     
     img_id = 0  #180, 340, 400   # you can start from a desired frame id if needed 
+    fig, axs = plt.subplots(ncols=2, figsize=(20,10), subplot_kw={"projection":"3d"})
     while dataset.isOk():
             
         if not is_paused: 
@@ -117,6 +122,72 @@ if __name__ == "__main__":
                 # 3D display (map display)
                 if viewer3D is not None:
                     viewer3D.draw_map(slam)
+                
+                map_points = slam.map.get_points()
+                if map_points:
+                    # current cam pose
+                    frame_ = slam.map.get_frame(-1)
+                    Twc = frame_.Twc.copy()
+                    Tcw = frame_.Tcw.copy()
+                    Rwc, Rcw = Twc[:3,:3], Tcw[:3,:3]
+                    twc, tcw = Twc[:3,3], Tcw[:3,3]
+
+                    # get current heading vector by multiplying R at init heading, R@v
+                    v_heading = Rwc @ np.array([0,0,1]).reshape(-1,1)
+
+                    r = Rotation.from_matrix(Rwc)
+                    print('cur pos: ', twc)
+                    print('Euler (deg): ', r.as_euler('xyz', degrees=True))
+                    print('v_heading: ', v_heading.ravel())
+
+                    thr_dist = 5
+                    height_min, height_max = 1, 3   # I don't know the relative scale...                    
+                    width_max = 2
+                    forward_max = 10
+                    width_min, forward_min = -width_max, -forward_max
+                    ub = forward_max
+
+                    pts_near_cam = []
+                    pts_c = [(Tcw@np.hstack((p.pt, 1)))[:3] for p in map_points]
+                    # pts = [(Rcw@p.pt.reshape(-1,1)).T for p in map_points]  # change from world to cam coordinate
+                    for pt in pts_c:
+                        if (width_min < pt[0] < width_max) \
+                            and (height_min < pt[1] < height_max) \
+                            and (forward_min < pt[2] < forward_max):
+                            pts_near_cam.append(pt)
+
+                    if pts_near_cam:
+                        pts_near_cam = np.array(pts_near_cam)
+                        fontlabel = {"fontsize":"large", "color":"black", "fontweight":"bold"}
+                        ax = axs[0]
+                        ax.clear()
+                        Xs, Ys, Zs = pts_near_cam[:,0], pts_near_cam[:,2], pts_near_cam[:,1]
+                        ax.scatter(Xs, Ys, Zs)
+                        ax.set_xlabel("X", fontdict=fontlabel)
+                        ax.set_ylabel("Z", fontdict=fontlabel)
+                        ax.set_title("cam coord\nY", fontdict=fontlabel)
+                        ax.invert_zaxis()
+                        
+                        ax = axs[1]
+                        ax.clear()
+                        Xs, Ys, Zs = pts_near_cam[:,0], pts_near_cam[:,2], pts_near_cam[:,1]
+                        ax.scatter(Xs, Ys, Zs)
+                        ax.set_xlim3d([-ub,ub])
+                        ax.set_ylim3d([-ub,ub])
+                        ax.set_zlim3d([-ub,ub])
+                        ax.set_xlabel("X", fontdict=fontlabel)
+                        ax.set_ylabel("Z", fontdict=fontlabel)
+                        ax.set_title("cam coord\nY", fontdict=fontlabel)
+                        ax.invert_zaxis()
+                        # ax.set_box_aspect([1,1,1])  # set equal ratio
+                        plt.show()
+
+
+                    # pts_near_cam = [p for p in map_points \
+                    #     if (np.linalg.norm(pt - twc) < thr_dist) \
+                    #         and (pt[1] - twc[1] < thr_height)]
+                    print('# road pts: ', len(pts_near_cam))
+                    print()
 
                 img_draw = slam.map.draw_feature_trails(img)
                     
@@ -144,10 +215,10 @@ if __name__ == "__main__":
                         matched_points_plt.draw(descriptor_sigma_signal,'descriptor distance $\sigma_{th}$',color='k')                                                                 
                     matched_points_plt.refresh()    
                 
-                duration = time.time()-time_start 
-                if(frame_duration > duration):
-                    print('sleeping for frame')
-                    time.sleep(frame_duration-duration)        
+                # duration = time.time()-time_start 
+                # if(frame_duration > duration):
+                #     print('sleeping for frame')
+                #     time.sleep(frame_duration-duration)        
                     
             img_id += 1  
         else:
