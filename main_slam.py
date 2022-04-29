@@ -17,7 +17,9 @@
 * along with PYSLAM. If not, see <http://www.gnu.org/licenses/>.
 """
 
+from pyexpat.model import XML_CTYPE_CHOICE
 import numpy as np
+np.random.seed(1)
 import cv2
 import math
 import time 
@@ -53,6 +55,10 @@ import multiprocessing as mp
 from scipy.spatial.transform import Rotation
 import matplotlib.pyplot as plt
 from utils_geom import add_ones_1D
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF
+from sklearn.preprocessing import StandardScaler
+
 np.set_printoptions(precision=4)
 
 
@@ -62,8 +68,8 @@ if __name__ == "__main__":
 
     dataset = dataset_factory(config.dataset_settings)
 
-    #groundtruth = groundtruth_factory(config.dataset_settings)
-    groundtruth = None # not actually used by Slam() class; could be used for evaluating performances 
+    groundtruth = groundtruth_factory(config.dataset_settings)
+    # groundtruth = None # not actually used by Slam() class; could be used for evaluating performances 
 
     cam = PinholeCamera(config.cam_settings['Camera.width'], config.cam_settings['Camera.height'],
                         config.cam_settings['Camera.fx'], config.cam_settings['Camera.fy'],
@@ -101,7 +107,22 @@ if __name__ == "__main__":
     is_paused = False 
     
     img_id = 0  #180, 340, 400   # you can start from a desired frame id if needed 
-    fig, axs = plt.subplots(ncols=2, figsize=(20,10), subplot_kw={"projection":"3d"})
+    fig, axs = plt.subplots(ncols=2, figsize=(13,7), subplot_kw={"projection":"3d"})
+
+    thr_dist = 5
+    height_min, height_max = 1.3, 2.2   # I don't know the relative scale...                    
+    width_max = 2
+    forward_max = 10
+    width_min, forward_min = -width_max, -forward_max
+    gap = 0.4
+    xx = np.arange(width_min, width_max+.01, gap)
+    zz = np.arange(forward_min/2, forward_max/2+.01, gap)
+    xx, zz = np.meshgrid(xx, zz)
+    xx, zz = np.ravel(xx), np.ravel(zz)
+    X_pred = np.vstack((xx, zz)).T
+    ub = forward_max
+    y_scaler = StandardScaler()
+
     while dataset.isOk():
             
         if not is_paused: 
@@ -140,13 +161,6 @@ if __name__ == "__main__":
                     print('Euler (deg): ', r.as_euler('xyz', degrees=True))
                     print('v_heading: ', v_heading.ravel())
 
-                    thr_dist = 5
-                    height_min, height_max = 1, 3   # I don't know the relative scale...                    
-                    width_max = 2
-                    forward_max = 10
-                    width_min, forward_min = -width_max, -forward_max
-                    ub = forward_max
-
                     pts_near_cam = []
                     pts_c = [(Tcw@np.hstack((p.pt, 1)))[:3] for p in map_points]
                     # pts = [(Rcw@p.pt.reshape(-1,1)).T for p in map_points]  # change from world to cam coordinate
@@ -161,8 +175,8 @@ if __name__ == "__main__":
                         fontlabel = {"fontsize":"large", "color":"black", "fontweight":"bold"}
                         ax = axs[0]
                         ax.clear()
-                        Xs, Ys, Zs = pts_near_cam[:,0], pts_near_cam[:,2], pts_near_cam[:,1]
-                        ax.scatter(Xs, Ys, Zs)
+                        Xs, Ys, Zs = pts_near_cam[:,0], pts_near_cam[:,1], pts_near_cam[:,2]
+                        ax.scatter(Xs, Zs, Ys)
                         ax.set_xlabel("X", fontdict=fontlabel)
                         ax.set_ylabel("Z", fontdict=fontlabel)
                         ax.set_title("cam coord\nY", fontdict=fontlabel)
@@ -170,8 +184,7 @@ if __name__ == "__main__":
                         
                         ax = axs[1]
                         ax.clear()
-                        Xs, Ys, Zs = pts_near_cam[:,0], pts_near_cam[:,2], pts_near_cam[:,1]
-                        ax.scatter(Xs, Ys, Zs)
+                        ax.scatter(Xs, Zs, Ys)
                         ax.set_xlim3d([-ub,ub])
                         ax.set_ylim3d([-ub,ub])
                         ax.set_zlim3d([-ub,ub])
@@ -181,12 +194,65 @@ if __name__ == "__main__":
                         ax.invert_zaxis()
                         # ax.set_box_aspect([1,1,1])  # set equal ratio
                         plt.show()
+                        time.sleep(0.01)
+                        plt.show()
+                        time.sleep(0.01)
 
+                        z_min, z_max = np.min(Zs), np.max(Zs)
+                        if (z_min < 0 < z_max) and (z_max - z_min > 5) and pts_near_cam.shape[0] > 20:
+                            kernel = 1 * RBF(length_scale=1, length_scale_bounds=(1e-2, 1e2))
+                            gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=1)
+                            X_train = pts_near_cam[:,[0,2]]
+                            y_train = pts_near_cam[:,1]
+                            y_scaled = y_scaler.fit_transform(y_train.reshape(-1,1))
+                            gp.fit(X_train, y_scaled)
+                            
+                            yy_scaled = gp.predict(X_pred)
+                            yy = y_scaler.inverse_transform(yy_scaled)
+
+                            # z direction
+                            dz = 4  # wheel dist?
+                            X_forward = np.array([[0,-dz], [0,0]]) # front wheels at 0, back wheels at -dz
+                            y_forward = y_scaler.inverse_transform(gp.predict(X_forward)).ravel()
+                            dy = y_forward[1] - y_forward[0]
+                            vec_road = np.array([0,dy,dz])
+                            vec_road = vec_road / np.linalg.norm(vec_road)
+                            pitch_deg = np.arcsin(-vec_road[1]) * 180 / np.pi
+
+                            # x direction
+                            dx = 2  # wheel dist?
+                            X_right = np.array([[-dx/2,0], [dx/2,0]])
+                            y_right = y_scaler.inverse_transform(gp.predict(X_right)).ravel()
+                            dy = y_right[1] - y_right[0]
+                            vec_road = np.array([dx,dy,0])
+                            vec_road = vec_road / np.linalg.norm(vec_road)
+                            roll_deg = np.arcsin(vec_road[1]) * 180 / np.pi
+                            
+                            # height
+                            X_height = np.array([[-dx/2,0], [dx/2,0]]) 
+                            y_height = y_scaler.inverse_transform(gp.predict(X_height)).ravel()
+                            height_cur = np.mean(y_height)
+
+                            axs[0].scatter(xx, zz, yy, alpha=0.4)
+                            axs[0].set_title(f"cam coord\nY\n{height_cur:.3f}m, p {pitch_deg:.3f}deg, r {roll_deg:.3f}deg", fontdict=fontlabel)
+                            axs[1].scatter(xx, zz, yy, alpha=0.4)
+
+                            # 3dplot - pitch
+                            axs[1].plot([0,0], [0,0], [0,height_cur], c='k')
+                            axs[1].plot([0,0], [-dz,-dz], [0,height_cur], c='k')
+
+                            # 3dplot - yaw
+                            axs[1].plot([-dx/2,-dx/2], [0,0], [0,height_cur], c='b')
+                            axs[1].plot([dx/2,dx/2], [0,0], [0,height_cur], c='b')
+                            print()
 
                     # pts_near_cam = [p for p in map_points \
                     #     if (np.linalg.norm(pt - twc) < thr_dist) \
                     #         and (pt[1] - twc[1] < thr_height)]
                     print('# road pts: ', len(pts_near_cam))
+                    if Parameters.kUseGroundTruthScale:
+                        slam.tracking.get_absolute_scale(frame_.id)
+                        print('true x, y, z: ', slam.tracking.trueX, slam.tracking.trueY, slam.tracking.trueZ)
                     print()
 
                 img_draw = slam.map.draw_feature_trails(img)

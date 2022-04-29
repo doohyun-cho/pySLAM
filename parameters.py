@@ -74,6 +74,7 @@ class Parameters(object):
                                                       # WARNING: essential matrix fitting comes with some limitations (please, read the comments of the method slam.estimate_pose_ess_mat())
     kMaxNumOfKeyframesInLocalMap = 80
     kNumBestCovisibilityKeyFrames = 10
+    kUseGroundTruthScale = True
     
     
     # Keyframe generation 

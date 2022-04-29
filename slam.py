@@ -18,6 +18,7 @@
 """
 
 import numpy as np
+np.random.seed(1)
 import time
 from enum import Enum
 
@@ -69,7 +70,8 @@ kRansacThresholdNormalized = 0.0003  # 0.0003 # metric threshold used for normal
 kRansacProb = 0.999
 kNumMinInliersEssentialMat = 8
 
-kUseGroundTruthScale = False 
+kUseGroundTruthScale = Parameters.kUseGroundTruthScale 
+kAbsoluteScaleThreshold = 0.1        # absolute translation scale; it is also the minimum translation norm for an accepted motion 
 
 kNumMinInliersPoseOptimizationTrackFrame = 10
 kNumMinInliersPoseOptimizationTrackLocalMap = 20
@@ -110,7 +112,7 @@ class Slam(object):
         self.local_mapping = LocalMapping(self.map)
         if kLocalMappingOnSeparateThread:
             self.local_mapping.start()
-        self.groundtruth = groundtruth  # not actually used here; could be used for evaluating performances 
+        self.groundtruth = groundtruth  # used here; could be used for evaluating performances 
         self.tracking = Tracking(self)
 
         
@@ -145,7 +147,7 @@ class Tracking(object):
         
         self.local_mapping = system.local_mapping
                                 
-        self.intializer = Initializer()
+        self.intializer = Initializer(system)
         
         self.motion_model = MotionModel()  # motion model for current frame pose prediction without damping  
         #self.motion_model = MotionModelDamping()  # motion model for current frame pose prediction with damping       
@@ -203,7 +205,7 @@ class Tracking(object):
         self.cur_R = None # current rotation w.r.t. world frame  
         self.cur_t = None # current translation w.r.t. world frame 
         self.trueX, self.trueY, self.trueZ = None, None, None
-        self.groundtruth = system.groundtruth  # not actually used here; could be used for evaluating performances 
+        self.groundtruth = system.groundtruth  # let's use in here; could be used for evaluating performances 
         
         if kLogKFinfoToFile:
             self.kf_info_logger = Logging.setup_file_logger('kf_info_logger', 'kf_info.log',formatter=Logging.simple_log_formatter)
@@ -220,8 +222,18 @@ class Tracking(object):
         Mrc, self.mask_match = estimate_pose_ess_mat(f_ref.kpsn[idxs_ref], f_cur.kpsn[idxs_cur], 
                                                      method=cv2.RANSAC, prob=kRansacProb, threshold=kRansacThresholdNormalized)   
         #Mcr = np.linalg.inv(poseRt(Mrc[:3, :3], Mrc[:3, 3]))   
+        
+        absolute_scale_sum = 0
+        for i in range(f_ref.id+1, f_cur.id+1):
+            trueX, trueY, trueZ, absolute_scale = self.system.groundtruth.getPoseAndAbsoluteScale(f_cur.id)
+            absolute_scale_sum += absolute_scale
+        if (absolute_scale_sum > 0.1):
+            print(f'scaled w/ GT, scale {absolute_scale_sum:.3f}')
+            Mrc[:3,3] = absolute_scale_sum * Mrc[:3,3]
+
         Mcr = inv_T(Mrc)
         estimated_Tcw = np.dot(Mcr, f_ref.pose)
+
         self.timer_pose_est.refresh()      
 
         # remove outliers from keypoint matches by using the mask computed with inter frame pose estimation        
@@ -241,7 +253,7 @@ class Tracking(object):
             #f_cur.pose[:3,:3] = estimated_Tcw[:3,:3] # copy only the rotation 
             #f_cur.pose[:,3] = f_ref.pose[:,3].copy() # override translation with ref frame translation 
             Rcw = estimated_Tcw[:3,:3] # copy only the rotation 
-            tcw = f_ref.pose[:3,3]     # override translation with ref frame translation          
+            tcw = estimated_Tcw[:3,3]  # override translation with ref frame translation          
             f_cur.update_rotation_and_translation(Rcw, tcw)     
         return  idxs_ref, idxs_cur
 
@@ -712,13 +724,13 @@ class Tracking(object):
 
 
     # get current translation scale from ground-truth if this is set 
-    # def get_absolute_scale(self, frame_id):  
-    #     if self.groundtruth is not None and kUseGroundTruthScale:
-    #         self.trueX, self.trueY, self.trueZ, scale = self.groundtruth.getPoseAndAbsoluteScale(frame_id)
-    #         return scale
-    #     else:
-    #         self.trueX = 0 
-    #         self.trueY = 0 
-    #         self.trueZ = 0
-    #         return 1
+    def get_absolute_scale(self, frame_id):  
+        if self.groundtruth is not None and kUseGroundTruthScale:
+            self.trueX, self.trueY, self.trueZ, scale = self.groundtruth.getPoseAndAbsoluteScale(frame_id)
+            return scale
+        else:
+            self.trueX = 0 
+            self.trueY = 0 
+            self.trueZ = 0
+            return 1
 

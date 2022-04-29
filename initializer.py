@@ -58,7 +58,8 @@ class InitializerOutput(object):
 
 
 class Initializer(object):
-    def __init__(self):
+    def __init__(self, system):
+        self.system = system
         self.mask_match = None
         self.mask_recover = None 
         self.frames = deque(maxlen=kMaxLenFrameDeque)  # deque with max length, it is thread-safe      
@@ -136,10 +137,25 @@ class Initializer(object):
         print('initializing frames ', f_cur.id, ', ', f_ref.id)
         print("# keypoint matches: ", len(idxs_cur))  
                 
+        
         Trc = self.estimatePose(f_ref.kpsn[idxs_ref], f_cur.kpsn[idxs_cur])
+        absolute_scale_sum = 0
+        for i in range(f_ref.id+1, f_cur.id+1):
+            trueX, trueY, trueZ, absolute_scale = self.system.groundtruth.getPoseAndAbsoluteScale(f_cur.id)
+            absolute_scale_sum += absolute_scale
+        if (absolute_scale_sum > 0.1):
+            print(f'scaled w/ GT, scale {absolute_scale_sum:.3f}')
+            Trc[:3,3] = absolute_scale_sum * Trc[:3,3]
         Tcr = inv_T(Trc)  # Tcr w.r.t. ref frame 
-        f_ref.update_pose(np.eye(4))        
-        f_cur.update_pose(Tcr)
+
+        trueX, trueY, trueZ, absolute_scale = self.system.groundtruth.getPoseAndAbsoluteScale(f_ref.id)
+        T_ref = np.eye(4)
+        T_ref[0,3] = -trueX
+        T_ref[1,3] = -trueY
+        T_ref[2,3] = -trueZ
+        T_cur = Tcr@T_ref
+        f_ref.update_pose(T_ref)
+        f_cur.update_pose(T_cur)
 
         # remove outliers from keypoint matches by using the mask computed with inter frame pose estimation        
         mask_idxs = (self.mask_match.ravel() == 1)
